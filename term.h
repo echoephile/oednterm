@@ -1,13 +1,19 @@
 #ifndef OEDNTERM_H_
 #define OEDNTERM_H_
 
+#define GLAD_GLES2_USE_SYSTEM_EGL
+#include "gles2.h"
+
+#include <GLFW/glfw3.h>
+
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
 #define return_defer(Result) do { result = (Result); goto defer; } while (0)
 
-#define TERM_MIN_COLUMNS   (2)
-#define TERM_MIN_ROWS      (2)
+#define TERM_MIN_COLUMNS   (40)
+#define TERM_MIN_ROWS      (13)
 #define TERM_MAX_COLUMNS   (256)
 #define TERM_MAX_ROWS      (256)
 
@@ -74,17 +80,50 @@ typedef struct term_vertex {
 
 typedef struct term {
     term_lines lines;
+
+    GLFWwindow* window;
+    bool is_fullscreen;
+    int cached_window_width, cached_window_height;
+
+    int aspect;
+    int columns, rows;
+
+    GLuint font_atlas;
+    GLuint vbo, ibo;
+    GLuint vertex_shader, fragment_shader;
+    GLuint shader_program;
+    GLuint uniform_glyph_size, uniform_atlas_size;
+    GLuint uniform_viewport_size, uniform_glyph_aspect;
+
+    term_vertex* vertices;
+    bool dirty;
 } term;
 
-void term_lines_init(term_lines* lines, uint16_t column_count);
+bool term_lines_init(term_lines* lines, uint16_t column_count);
 void term_lines_deinit(term_lines* lines);
 term_cell* term_lines_get_cells_at_index(const term_lines* lines, uint32_t index);
-void term_lines_reflow(term_lines* lines, uint16_t new_column_count);
+bool term_lines_reflow(term_lines* lines, uint16_t new_column_count);
 
-void term_flush(term* t);
+bool term_init(term* t);
+void term_deinit(term* t);
+void term_loop(term* t);
+bool term_flush(term* t);
 void term_putc(term* t, char c);
 void term_puts(term* t, const char* str);
 void term_printf(term* t, const char* format, ...);
+
+static struct {
+    int x, y;
+} aspect_ratios[] = {
+    { 1, 1 },
+    { 2, 2 },
+    { 2, 3 },
+    { 3, 3 },
+    { 3, 4 },
+    { 4, 4 },
+    { 4, 5 },
+    { 0 },
+};
 
 // https://javl.github.io/image2cpp/
 // this is a 1-bit-per-pixel bitmap font for Oedn.
@@ -170,5 +209,59 @@ static const uint8_t term_bitmap_font_data[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
+
+static const char* vertex_shader_source =
+    "#version 100\n"
+    "\n"
+    "attribute mediump vec2 position;\n"
+    "attribute mediump vec2 glyph_coords;\n"
+    "attribute mediump vec3 glyph_foreground;\n"
+    "attribute mediump vec3 glyph_background;\n"
+    "attribute mediump float glyph_codepoint;\n"
+    "\n"
+    "uniform mediump vec2 viewport_size;\n"
+    "uniform mediump vec2 glyph_aspect;\n"
+    "uniform mediump vec2 glyph_size;\n"
+    "\n"
+    "varying mediump vec2 coords;\n"
+    "varying mediump vec3 foreground;\n"
+    "varying mediump vec3 background;\n"
+    "varying mediump float codepoint;\n"
+    "\n"
+    "void main() {\n"
+    "    coords = glyph_coords;\n"
+    "    foreground = glyph_foreground;\n"
+    "    background = glyph_background;\n"
+    "    codepoint = glyph_codepoint;\n"
+    "\n"
+    "    mediump vec2 position_normal = ((position * glyph_size * glyph_aspect / viewport_size)\n"
+    "        - vec2(0.5, 0.5)) * vec2(2.0, -2.0);\n"
+    "    gl_Position = vec4(position_normal, 0.0, 1.0);\n"
+    "}\n";
+
+static const char* fragment_shader_source =
+    "#version 100\n"
+    "\n"
+    "uniform mediump vec2 glyph_size;\n"
+    "uniform mediump vec2 atlas_size;\n"
+    "\n"
+    "uniform sampler2D font_atlas;\n"
+    "\n"
+    "varying mediump vec2 coords;\n"
+    "varying mediump vec3 foreground;\n"
+    "varying mediump vec3 background;\n"
+    "varying mediump float codepoint;\n"
+    "\n"
+    "void main() {\n"
+    "    int cx = int(mod(codepoint, 16.0));\n"
+    "    int cy = int(codepoint) / 16;\n"
+    "\n"
+    "    mediump vec2 relative_coords = coords + vec2(float(cx), float(cy));\n"
+    "    mediump vec2 glyph_coords = glyph_size * relative_coords;\n"
+    "    mediump vec2 texture_coords = glyph_coords / atlas_size;\n"
+    "\n"
+    "    mediump float alpha = texture2D(font_atlas, texture_coords).r;\n"
+    "    gl_FragColor = vec4(mix(background, foreground, alpha), 1.0);\n"
+    "}\n";
 
 #endif /* OEDNTERM_H_ */
